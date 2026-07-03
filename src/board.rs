@@ -1,9 +1,10 @@
 use std::fmt;
 
+use crate::board::FenParseError::*;
+
 pub struct Board {
     // 12 64 bit int bitboards - 2 colors, 6 pieces
-    white_bb: [u64; 6], // white - [pawn, knight, bishop, rook, queen, king]
-    black_bb: [u64; 6], // black - [pawn, knight, bishop, rook, queen, king]
+    piece_bitboards: [u64; 12], // [white pawn, black pawn, ..., white king, black king]
 
     // 3 occupancy bitboards - white occupancy, black occupancy, general occupancy (union of both)
     white_occu: u64,
@@ -45,22 +46,32 @@ enum Piece {
 }
 
 #[derive(Debug)]
-struct InvalidPieceError(u8);
+pub enum FenParseError {
+    InvalidCodeLengthError(String),
+    InvalidPieceError(u8),
+}
 
-impl fmt::Display for InvalidPieceError {
+impl fmt::Display for FenParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "InvalidPieceError: \"{}\" is not a valid Piece type.",
-            char::from(self.0)
-        )
+        match self {
+            FenParseError::InvalidCodeLengthError(code) => write!(
+                f,
+                "InvalidCodeLengthError: '{}' does not contain the expected number of fields.",
+                code
+            ),
+            FenParseError::InvalidPieceError(byte) => write!(
+                f,
+                "InvalidPieceError: '{}' is not a valid Piece type.",
+                char::from(*byte)
+            ),
+        }
     }
 }
 
-impl std::error::Error for InvalidPieceError {}
+impl std::error::Error for FenParseError {}
 
 impl TryFrom<u8> for Piece {
-    type Error = InvalidPieceError;
+    type Error = FenParseError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
@@ -84,17 +95,16 @@ impl TryFrom<u8> for Piece {
 const DEFAULT_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 impl Board {
-    pub fn new() -> Self {
+    pub fn new() -> Result<Self, FenParseError> {
         Self::from_fen(DEFAULT_FEN)
     }
 
-    pub fn from_fen(fen_code: &str) -> Self {
+    pub fn from_fen(fen_code: &str) -> Result<Self, FenParseError> {
         // build board from FEN notation
-        let mut white_bb: [u64; 6] = [0; 6];
-        let mut black_bb: [u64; 6] = [0; 6];
-        let mut white_occu: u64 = 0;
-        let mut black_occu: u64 = 0;
-        let mut full_occu: u64 = 0;
+        let mut piece_bitboards: [u64; 12] = [0x0; 12];
+        let mut white_occu: u64 = 0x0;
+        let mut black_occu: u64 = 0x0;
+        let mut full_occu: u64 = 0x0;
         let mut active = true;
         let mut white_castling: [bool; 2] = [true; 2];
         let mut black_castling: [bool; 2] = [true; 2];
@@ -104,6 +114,11 @@ impl Board {
 
         let mut square_index: i8 = -1;
         let def_bitstring = 0x1; // for shifting
+
+        let fen_code_parts: Vec<&str> = fen_code.split_whitespace().collect();
+        if fen_code_parts.len() != 6 {
+            return Err(InvalidCodeLengthError(String::from(fen_code)));
+        }
 
         for byte in fen_code.bytes() {
             match byte {
@@ -115,18 +130,27 @@ impl Board {
                 _ => {
                     square_index += 1;
 
-                    let result = def_bitstring << (63 - square_index);
+                    let change_bitstring: u64 = def_bitstring << (63 - square_index);
 
-                    if byte == b'P' {
-                        white_bb[0] | result;
-                    } else if byte == b'p' {
-                        black_bb[0] | result;
-                    }
+                    let piece = Piece::try_from(byte)?;
+
+                    piece_bitboards[piece as usize] |= change_bitstring;
                 }
             }
         }
 
-        Board {}
+        Ok(Board {
+            piece_bitboards: piece_bitboards,
+            white_occu: white_occu,
+            black_occu: black_occu,
+            full_occu: full_occu,
+            active: active,
+            white_castling: white_castling,
+            black_castling: black_castling,
+            ep_target: ep_target,
+            half_clock: half_clock,
+            full_clock: full_clock,
+        })
     }
 }
 
