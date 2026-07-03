@@ -1,20 +1,131 @@
+use std::fmt;
+
 pub struct Board {
-    // 12 64bit int bitboards - 2 colors, 6 pieces
+    // 12 64 bit int bitboards - 2 colors, 6 pieces
+    white_bb: [u64; 6], // white - [pawn, knight, bishop, rook, queen, king]
+    black_bb: [u64; 6], // black - [pawn, knight, bishop, rook, queen, king]
+
     // 3 occupancy bitboards - white occupancy, black occupancy, general occupancy (union of both)
+    white_occu: u64,
+    black_occu: u64,
+    full_occu: u64,
+
     // active color
+    active: bool, // white = true, black = false
+
     // castling rights
-    // en passant target square
+    white_castling: [bool; 2], // white - [can castle kingside, can castle queenside]
+    black_castling: [bool; 2], // black - [can castle kingside, can castle queenside]
+
+    // en passant target square     (if a pawn moved from e2 - e4, e3 was skipped an is en passant available)
+    ep_target: i8, // 0-63 top left board corner to bottom right,
+    // moving left to right, top to bottom
+    // -1 means not applicable
+
     // half and full move clocks
+    half_clock: u8, // number of half moves since last pawn advance or piece capture
+    full_clock: u8, // number of full moves since start of game
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Piece {
+    WhitePawn,
+    BlackPawn,
+    WhiteKnight,
+    BlackKnight,
+    WhiteBishop,
+    BlackBishop,
+    WhiteRook,
+    BlackRook,
+    WhiteQueen,
+    BlackQueen,
+    WhiteKing,
+    BlackKing,
+}
+
+#[derive(Debug)]
+struct InvalidPieceError(u8);
+
+impl fmt::Display for InvalidPieceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "InvalidPieceError: \"{}\" is not a valid Piece type.",
+            char::from(self.0)
+        )
+    }
+}
+
+impl std::error::Error for InvalidPieceError {}
+
+impl TryFrom<u8> for Piece {
+    type Error = InvalidPieceError;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            b'P' => Ok(Piece::WhitePawn),
+            b'p' => Ok(Piece::BlackPawn),
+            b'N' => Ok(Piece::WhiteKnight),
+            b'n' => Ok(Piece::BlackKnight),
+            b'B' => Ok(Piece::WhiteBishop),
+            b'b' => Ok(Piece::BlackBishop),
+            b'R' => Ok(Piece::WhiteRook),
+            b'r' => Ok(Piece::BlackRook),
+            b'Q' => Ok(Piece::WhiteQueen),
+            b'q' => Ok(Piece::BlackQueen),
+            b'K' => Ok(Piece::WhiteKing),
+            b'k' => Ok(Piece::BlackKing),
+            _ => Err(InvalidPieceError(value)),
+        }
+    }
+}
+
+const DEFAULT_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 impl Board {
     pub fn new() -> Self {
-        // build default game start board
-        Board {}
+        Self::from_fen(DEFAULT_FEN)
     }
 
-    pub fn from_fen() -> Self {
+    pub fn from_fen(fen_code: &str) -> Self {
         // build board from FEN notation
+        let mut white_bb: [u64; 6] = [0; 6];
+        let mut black_bb: [u64; 6] = [0; 6];
+        let mut white_occu: u64 = 0;
+        let mut black_occu: u64 = 0;
+        let mut full_occu: u64 = 0;
+        let mut active = true;
+        let mut white_castling: [bool; 2] = [true; 2];
+        let mut black_castling: [bool; 2] = [true; 2];
+        let mut ep_target: i8 = -1; // default to no applicable en passant
+        let mut half_clock: u8 = 0;
+        let mut full_clock: u8 = 1;
+
+        let mut square_index: i8 = -1;
+        let def_bitstring = 0x1; // for shifting
+
+        for byte in fen_code.bytes() {
+            match byte {
+                b'/' => continue,
+                b'1'..=b'8' => {
+                    let empty_squares = (byte - b'0') as i8;
+                    square_index += empty_squares;
+                }
+                _ => {
+                    square_index += 1;
+
+                    let result = def_bitstring << (63 - square_index);
+
+                    if byte == b'P' {
+                        white_bb[0] | result;
+                    } else if byte == b'p' {
+                        black_bb[0] | result;
+                    }
+                }
+            }
+        }
+
         Board {}
     }
 }
