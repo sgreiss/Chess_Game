@@ -1,6 +1,7 @@
 use crate::board::FenParseError;
 use crate::board::FenParseError::*;
 use crate::board::Piece;
+use crate::board::piece;
 
 pub struct Board {
     // 12 64 bit int bitboards - 2 colors, 6 pieces
@@ -167,6 +168,16 @@ impl Board {
         }
 
         // Occupancy Calculations
+
+        for i in 0..6 {
+            let w_index = 2 * i;        // only even indices for white pieces
+            let b_index = 2 * i + 1;    // only odd indices for black pieces
+            white_occu |= piece_bitboards[w_index];
+            black_occu |= piece_bitboards[b_index];
+        }
+
+        full_occu |= white_occu;
+        full_occu |= black_occu;
 
         Ok(Board {
             piece_bitboards: piece_bitboards,
