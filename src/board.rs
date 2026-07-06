@@ -12,7 +12,7 @@ pub struct Board {
     full_occu: u64,
 
     // active color
-    active: bool, // white = true, black = false
+    white_active: bool, // white = true, black = false
 
     // castling rights
     white_castling: [bool; 2], // white - [can castle kingside, can castle queenside]
@@ -24,8 +24,8 @@ pub struct Board {
     // -1 means not applicable
 
     // half and full move clocks
-    half_clock: u8, // number of half moves since last pawn advance or piece capture
-    full_clock: u8, // number of full moves since start of game
+    half_clock: u8, // number of half moves since last pawn advance or piece capture, valid (0, 100) inclusive
+    full_clock: u16, // number of full moves since start of game, valid 1+
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,22 +47,81 @@ enum Piece {
 
 #[derive(Debug)]
 pub enum FenParseError {
-    InvalidCodeLengthError(String),
+    InvalidFieldCount(String),
+    InvalidFieldLengthError(String, u8),
     InvalidPieceError(u8),
+    InvalidStartingColorError(u8),
+    InvalidCastlingArgumentError(u8),
+    InvalidEPArgumentError(String),
+    HalfClockArgumentNotInRangeError(u8),
+    InvalidHalfClockArgumentError(String),
+    FullClockArgumentNotInRangeError(u16),
+    InvalidFullClockArgumentError(String),
 }
 
 impl fmt::Display for FenParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FenParseError::InvalidCodeLengthError(code) => write!(
+            FenParseError::InvalidFieldCount(code) => write!(
                 f,
-                "InvalidCodeLengthError: '{}' does not contain the expected number of fields.",
+                "InvalidFieldCount: '{}' does not contain the expected number of fields: [placement][active][castling][en passant][half clock][full clock]",
                 code
             ),
-            FenParseError::InvalidPieceError(byte) => write!(
+            FenParseError::InvalidFieldLengthError(code_splice, field) => {
+                let field_name = match field {
+                    0 => "placement",
+                    1 => "active",
+                    2 => "castling",
+                    3 => "en passant",
+                    4 => "half clock",
+                    5 => "full clock",
+                    _ => "",
+                };
+                write!(
+                    f,
+                    "InvalidFieldLengthError: '{}' is not the proper length for the field [{}]",
+                    code_splice, field_name
+                )
+            }
+            FenParseError::InvalidPieceError(piece_byte) => write!(
                 f,
                 "InvalidPieceError: '{}' is not a valid Piece type.",
-                char::from(*byte)
+                char::from(*piece_byte)
+            ),
+            FenParseError::InvalidStartingColorError(color_byte) => write!(
+                f,
+                "InvalidStartingColorError: '{}' is not a valid color type.",
+                char::from(*color_byte)
+            ),
+            FenParseError::InvalidCastlingArgumentError(castling_byte) => write!(
+                f,
+                "InvalidCastlingArgumentError: '{}' is not a valid castling argument.",
+                char::from(*castling_byte)
+            ),
+            FenParseError::InvalidEPArgumentError(ep_code_splice) => write!(
+                f,
+                "InvalidEnPassantArgumentError: '{}' is not a recognized target square or '-'.",
+                ep_code_splice
+            ),
+            FenParseError::HalfClockArgumentNotInRangeError(clock) => write!(
+                f,
+                "HalfClockArgumentNotInRangeError: '{}' does not fall within the allowed range for the half clock field: (0, 100) inclusive.",
+                clock
+            ),
+            FenParseError::InvalidHalfClockArgumentError(half_clock_splice) => write!(
+                f,
+                "InvalidHalfClockArgumentError: '{}' must be an integer in the inclusive range (0, 100).",
+                half_clock_splice
+            ),
+            FenParseError::FullClockArgumentNotInRangeError(clock) => write!(
+                f,
+                "FullClockArgumentNotInRangeError: '{}' does not fall within the allowed range for the full clock field of positve integers.",
+                clock
+            ),
+            FenParseError::InvalidFullClockArgumentError(full_clock_splice) => write!(
+                f,
+                "InvalidFullClockArgumentError: '{}' must be a postive integer greater than or equal to '1'.",
+                full_clock_splice
             ),
         }
     }
@@ -105,24 +164,32 @@ impl Board {
         let mut white_occu: u64 = 0x0;
         let mut black_occu: u64 = 0x0;
         let mut full_occu: u64 = 0x0;
-        let mut active = true;
-        let mut white_castling: [bool; 2] = [true; 2];
-        let mut black_castling: [bool; 2] = [true; 2];
+        let mut white_active = true;
+        let mut white_castling: [bool; 2] = [false; 2];
+        let mut black_castling: [bool; 2] = [false; 2];
         let mut ep_target: i8 = -1; // default to no applicable en passant
-        let mut half_clock: u8 = 0;
-        let mut full_clock: u8 = 1;
+        let half_clock: u8;
+        let full_clock: u16;
 
         let mut square_index: i8 = -1;
         let def_bitstring = 0x1; // for shifting
 
         let fen_code_parts: Vec<&str> = fen_code.split_whitespace().collect();
         if fen_code_parts.len() != 6 {
-            return Err(InvalidCodeLengthError(String::from(fen_code)));
+            return Err(InvalidFieldCount(String::from(fen_code)));
         }
 
-        for byte in fen_code.bytes() {
+        // 1. Piece Placement
+
+        let mut slash_count = 0;
+
+        for byte in fen_code_parts[0].bytes() {
+            // read over the Piece Placement section of the FEN code
             match byte {
-                b'/' => continue,
+                b'/' => {
+                    slash_count += 1;
+                    continue;
+                }
                 b'1'..=b'8' => {
                     let empty_squares = (byte - b'0') as i8;
                     square_index += empty_squares;
@@ -139,12 +206,97 @@ impl Board {
             }
         }
 
+        if slash_count != 7 {
+            return Err(InvalidFieldLengthError(String::from(fen_code_parts[0]), 0));
+        }
+
+        // 2. Active Color
+
+        for byte in fen_code_parts[1].bytes() {
+            match byte {
+                b'w' => white_active = true,
+                b'b' => white_active = false,
+                _ => return Err(InvalidStartingColorError(byte)),
+            }
+        }
+
+        // 3. Castling Rights
+
+        for byte in fen_code_parts[2].bytes() {
+            match byte {
+                b'K' => white_castling[0] = true,
+                b'Q' => white_castling[1] = true,
+                b'k' => black_castling[0] = true,
+                b'q' => black_castling[1] = true,
+                _ => return Err(InvalidCastlingArgumentError(byte)),
+            }
+        }
+
+        // 4. En Passant Target Square
+        let mut step = 0; // 0 = reading files (a-h), 1 = reading ranks (1-8), 2 = finished
+
+        for byte in fen_code_parts[3].bytes() {
+            match byte {
+                b'-' => {
+                    ep_target = -1; // no en passant target square
+                    break;
+                }
+                b'a'..=b'h' => {
+                    if step == 0 {
+                        ep_target = byte as i8;
+                        step += 1;
+                    } else {
+                        return Err(InvalidEPArgumentError(String::from(fen_code_parts[3])));
+                    }
+                }
+                b'1'..=b'8' => {
+                    if step == 1 {
+                        ep_target *= byte as i8;
+                        step += 1;
+                    } else {
+                        return Err(InvalidEPArgumentError(String::from(fen_code_parts[3])));
+                    }
+                }
+                _ => return Err(InvalidEPArgumentError(String::from(fen_code_parts[3]))),
+            }
+        }
+
+        // 5. Halfmove Clock
+
+        if let Ok(num) = fen_code_parts[4].parse::<u8>() {
+            if (0..=100).contains(&num) {
+                half_clock = num;
+            } else {
+                return Err(HalfClockArgumentNotInRangeError(num));
+            }
+        } else {
+            return Err(InvalidHalfClockArgumentError(String::from(
+                fen_code_parts[4],
+            )));
+        }
+
+        // 6. Fullove Clock
+
+        if let Ok(num) = fen_code_parts[5].parse::<u16>() {
+            if num >= 1 {
+                full_clock = num;
+            } else {
+                return Err(FullClockArgumentNotInRangeError(num));
+            }
+        } else {
+            return Err(InvalidFullClockArgumentError(String::from(
+                fen_code_parts[5],
+            )));
+        }
+
+        // Occupancy Calculations
+
         Ok(Board {
             piece_bitboards: piece_bitboards,
             white_occu: white_occu,
             black_occu: black_occu,
             full_occu: full_occu,
-            active: active,
+            white_active: white_active,
             white_castling: white_castling,
             black_castling: black_castling,
             ep_target: ep_target,
